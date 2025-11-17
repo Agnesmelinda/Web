@@ -1,0 +1,2058 @@
+const mongoose = require('mongoose');
+
+const connectDB = async (mongoUri) => {
+  try {
+    await mongoose.connect(mongoUri, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
+    console.log('MongoDB connected');
+  } catch (err) {
+    console.error('MongoDB connection error:', err.message);
+    process.exit(1);
+  }
+};
+
+module.exports = connectDB;
+
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
+
+module.exports = async function (req, res, next) {
+  const authHeader = req.header('authorization') || req.header('Authorization');
+  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
+  if (!token) return res.status(401).json({ message: 'No token, authorization denied' });
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = await User.findById(decoded.id).select('-password');
+    if (!req.user) return res.status(401).json({ message: 'Invalid token' });
+    next();
+  } catch (err) {
+    console.error(err);
+    res.status(401).json({ message: 'Token is not valid' });
+  }
+};
+
+
+const mongoose = require('mongoose');
+
+const medicineSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  price: Number,
+  quantity: Number,
+  description: String,
+  imageUrl: String,        // served from /uploads
+  pharmacies: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Pharmacy' }],
+  owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User' } // who added it (pharmacist)
+}, { timestamps: true });
+
+module.exports = mongoose.model('Medicine', medicineSchema);
+
+const mongoose = require('mongoose');
+
+const pharmacySchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  address: String,
+  phone: String,
+  lat: Number,
+  lng: Number,
+  owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // optional
+}, { timestamps: true });
+
+module.exports = mongoose.model('Pharmacy', pharmacySchema);
+
+const mongoose = require('mongoose');
+
+const userSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  email: { type: String, required: true, unique: true, lowercase: true },
+  password: { type: String, required: true },
+  role: { type: String, enum: ['patient', 'pharmacist'], default: 'patient' },
+}, { timestamps: true });
+
+module.exports = mongoose.model('User', userSchema);
+
+
+
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "keywords": [],
+  "dependencies": {
+    "express": "^4.18.2",
+    "mongoose": "^7.6.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.1",
+    "multer": "^1.4.5-lts.1",
+    "jsonwebtoken": "^9.0.0",
+    "bcryptjs": "^2.4.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
+
+
+const express = require('express');const bcrypt = require('bcryptjs');const jwt = require('jsonwebtoken');const User = require('../models/User');const router = express.Router();// Registerrouter.post('/register', async (req, res) => {  try {    const { name, email, password, role } = req.body;    if (!name || !email || !password) return res.status(400).json({ message: 'Missing fields' });    let user = await User.findOne({ email });    if (user) return res.status(400).json({ message: 'User already exists' });    const salt = await bcrypt.genSalt(10);    const hashed = await bcrypt.hash(password, salt);    user = new User({ name, email, password: hashed, role });    await user.save();    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });    res.status(201).json({ token, role: user.role });  } catch (err) {    console.error(err);    res.status(500).json({ message: 'Server error' });  }});// Loginrouter.post('/login', async (req, res) => {  try {    const { email, password } = req.body;    if (!email || !password) return res.status(400).json({ message: 'Missing fields' });    const user = await User.findOne({ email });    if (!user) return res.status(400).json({ message: 'Invalid credentials' });    const isMatch = await bcrypt.compare(password, user.password);    if (!isMatch) return res.status(400).json({ message: 'Invalid credentials' });    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });    res.json({ token, role: user.role });  } catch (err) {    console.error(err);    res.status(500).json({ message: 'Server error' });  }});module.exports = router;
+Collapse file‎backend/routes/medicines.js‎Copy file name to clipboard+123Lines changed: 123 additions & 0 deletionsOriginal file line numberDiff line numberDiff line change@@ -0,0 +1,123 @@const express = require('express');const multer = require('multer');const path = require('path');const Medicine = require('../models/Medicine');const Pharmacy = require('../models/Pharmacy');const auth = require('../middleware/auth');const router = express.Router();// multer storage (store in /uploads)const storage = multer.diskStorage({  destination: function (req, file, cb) {    cb(null, 'uploads/');  },  filename: function (req, file, cb) {    const ext = path.extname(file.originalname);    const name = file.fieldname + '-' + Date.now() + ext;    cb(null, name);  }});const upload = multer({ storage });// Create medicine (protected, form-data with possible image and pharmacy IDs)router.post('/', auth, upload.single('image'), async (req, res) => {  try {    const { name, price, quantity, description, pharmacies } = req.body;    const med = new Medicine({      name,      price: price ? +price : undefined,      quantity: quantity ? +quantity : undefined,      description,      owner: req.user._id    });    if (req.file) med.imageUrl = `/uploads/${req.file.filename}`;    if (pharmacies) {      // expect pharmacies as JSON array or comma-separated IDs      try {        med.pharmacies = typeof pharmacies === 'string' && pharmacies.startsWith('[') ? JSON.parse(pharmacies) : pharmacies.split(',');      } catch {        med.pharmacies = pharmacies.split ? pharmacies.split(',') : [];      }    }    await med.save();    res.status(201).json(med);  } catch (err) {    console.error(err);    res.status(500).json({ message: 'Server error' });  }});// Update medicine (protected)router.put('/:id', auth, upload.single('image'), async (req, res) => {  try {    const med = await Medicine.findById(req.params.id);    if (!med) return res.status(404).json({ message: 'Not found' });    const { name, price, quantity, description, pharmacies } = req.body;    if (name !== undefined) med.name = name;    if (price !== undefined) med.price = +price;    if (quantity !== undefined) med.quantity = +quantity;    if (description !== undefined) med.description = description;    if (pharmacies !== undefined) {      try {        med.pharmacies = typeof pharmacies === 'string' && pharmacies.startsWith('[') ? JSON.parse(pharmacies) : pharmacies.split(',');      } catch {        med.pharmacies = pharmacies.split ? pharmacies.split(',') : [];      }    }    if (req.file) med.imageUrl = `/uploads/${req.file.filename}`;    await med.save();    res.json(med);  } catch (err) {    console.error(err);    res.status(500).json({ message: 'Server error' });  }});// Deleterouter.delete('/:id', auth, async (req, res) => {  try {    const med = await Medicine.findById(req.params.id);    if (!med) return res.status(404).json({ message: 'Not found' });    await med.remove();    res.json({ message: 'Deleted' });  } catch (err) {    res.status(500).json({ message: 'Server error' });  }});// Get all medicines (populate pharmacies)router.get('/', async (req, res) => {  try {    const list = await Medicine.find().populate('pharmacies').sort({ createdAt: -1 });    res.json(list);  } catch (err) {    res.status(500).json({ message: 'Server error' });  }});// Search endpoint: /api/medicines/search?q=paracetamolrouter.get('/search', async (req, res) => {  try {    const q = req.query.q || '';    const regex = new RegExp(q, 'i');    const list = await Medicine.find({ name: { $regex: regex } }).populate('pharmacies');    res.json(list);  } catch (err) {    res.status(500).json({ message: 'Server error' });  }});// Get single medicinerouter.get('/:id', async (req, res) => {  try {    const med = await Medicine.findById(req.params.id).populate('pharmacies');    if (!med) return res.status(404).json({ message: 'Not found' });    res.json(med);  } catch (err) {    res.status(500).json({ message: 'Server error' });  }});module.exports = router;
+
+
+const express = require('express');const Pharmacy = require('../models/Pharmacy');const auth = require('../middleware/auth');const router = express.Router();// Create pharmacy (protected)router.post('/', auth, async (req, res) => {  try {    // only pharmacists allowed to add? optional check:    // if (req.user.role !== 'pharmacist') return res.status(403).json({message:'Forbidden'});    const { name, address, phone, lat, lng } = req.body;    const p = new Pharmacy({ name, address, phone, lat: lat ? +lat : undefined, lng: lng ? +lng : undefined, owner: req.user._id });    await p.save();    res.status(201).json(p);  } catch (err) {    console.error(err);    res.status(500).json({ message: 'Server error' });  }});// List all pharmaciesrouter.get('/', async (req, res) => {  try {    const list = await Pharmacy.find().sort({ createdAt: -1 });    res.json(list);  } catch (err) {    res.status(500).json({ message: 'Server error' });  }});// Deleterouter.delete('/:id', auth, async (req, res) => {  try {    const p = await Pharmacy.findById(req.params.id);    if (!p) return res.status(404).json({ message: 'Not found' });    await p.remove();    res.json({ message: 'Deleted' });  } catch (err) {    res.status(500).json({ message: 'Server error' });  }});module.exports = router;
+Collapse file‎backend/seed.js‎Copy file name to clipboard+104Lines changed: 104 additions & 0 deletionsOriginal file line numberDiff line numberDiff line change@@ -0,0 +1,104 @@const mongoose = require('mongoose');const dotenv = require('dotenv');const Medicine = require('./models/Medicine'); // adjust path if neededconst connectDB = require('./config/db');dotenv.config();connectDB(process.env.MONGO_URI);const medicines = [  {    name: "Paracetamol 500mg",    category: "Pain Relief",    price: 5.99,    pharmacyName: "HealthPlus Pharmacy",    pharmacyAddress: "123 Main St, Downtown",    stock: 150,    status: "In Stock",    description: "Used for pain relief and fever reduction."  },  {    name: "Amoxicillin 250mg",    category: "Antibiotics",    price: 12.99,    pharmacyName: "MediCare Center",    pharmacyAddress: "456 Oak Ave, Midtown",    stock: 75,    status: "In Stock",    description: "Antibiotic for bacterial infections."  },  {    name: "Ibuprofen 400mg",    category: "Pain Relief",    price: 7.49,    pharmacyName: "City Pharmacy",    pharmacyAddress: "789 Elm St, Uptown",    stock: 0,    status: "Out of Stock",    description: "Reduces pain, inflammation, and fever."  },  {    name: "Cetirizine 10mg",    category: "Allergy",    price: 8.99,    pharmacyName: "Green Cross",    pharmacyAddress: "321 Pine Rd, Suburbs",    stock: 200,    status: "In Stock",    description: "Used for allergy symptom relief."  },  {    name: "Omeprazole 20mg",    category: "Digestive",    price: 15.99,    pharmacyName: "HealthPlus Pharmacy",    pharmacyAddress: "123 Main St, Downtown",    stock: 30,    status: "Low Stock",    description: "Used to treat acid reflux and ulcers."  },  {    name: "Aspirin 100mg",    category: "Pain Relief",    price: 4.99,    pharmacyName: "Wellness Pharmacy",    pharmacyAddress: "654 Maple Dr, Eastside",    stock: 180,    status: "In Stock",    description: "Used for pain relief and heart health."  },  {    name: "Metformin 500mg",    category: "Diabetes",    price: 18.99,    pharmacyName: "MediCare Center",    pharmacyAddress: "456 Oak Ave, Midtown",    stock: 95,    status: "In Stock",    description: "Used to control blood sugar levels in diabetes."  },  {    name: "Losartan 50mg",    category: "Blood Pressure",    price: 22.99,    pharmacyName: "City Pharmacy",    pharmacyAddress: "789 Elm St, Uptown",    stock: 25,    status: "Low Stock",    description: "Used to treat high blood pressure."  }];const seedData = async () => {  try {    await Medicine.deleteMany(); // clear old data    await Medicine.insertMany(medicines);    console.log('✅ Medicine data seeded successfully!');    process.exit();  } catch (error) {    console.error('❌ Error seeding data:', error);    process.exit(1);  }};seedData();
+Collapse file‎backend/seedPharmacies.js‎Copy file name to clipboard+60Lines changed: 60 additions & 0 deletionsOriginal file line numberDiff line numberDiff line change@@ -0,0 +1,60 @@const mongoose = require('mongoose');const dotenv = require('dotenv');const Pharmacy = require('./models/Pharmacy'); // adjust path if neededconst connectDB = require('./config/db');dotenv.config();connectDB(process.env.MONGO_URI);const pharmacies = [  {    name: "HealthPlus Pharmacy",    address: "123 Main St, Downtown",    phone: "+1 234-567-8901",    distance: 0.5,    medicinesAvailable: 150,    stockStatus: "High Stock",    status: "Active"  },  {    name: "MediCare Center",    address: "456 Oak Ave, Midtown",    phone: "+1 234-567-8902",    distance: 1.2,    medicinesAvailable: 75,    stockStatus: "Medium Stock",    status: "Active"  },  {    name: "City Pharmacy",    address: "789 Elm St, Uptown",    phone: "+1 234-567-8903",    distance: 2.3,    medicinesAvailable: 45,    stockStatus: "Low Stock",    status: "Inactive"  },  {    name: "Wellness Pharmacy",    address: "654 Maple Dr, Eastside",    phone: "+1 234-567-8905",    distance: 3.0,    medicinesAvailable: 200,    stockStatus: "High Stock",    status: "Active"  }];const seedPharmacies = async () => {  try {    await Pharmacy.deleteMany(); // clear old pharmacies    await Pharmacy.insertMany(pharmacies);    console.log('✅ Pharmacy data seeded successfully!');    process.exit();  } catch (error) {    console.error('❌ Error seeding pharmacy data:', error);    process.exit(1);  }};seedPharmacies();
+Collapse file‎backend/server.js‎Copy file name to clipboard+36Lines changed: 36 additions & 0 deletionsOriginal file line numberDiff line numberDiff line change@@ -0,0 +1,36 @@const express = require('express');const path = require('path');const cors = require('cors');const dotenv = require('dotenv');const connectDB = require('./config/db');dotenv.config();const app = express();const PORT = process.env.PORT || 5000;connectDB(process.env.MONGO_URI);// Middlewaresapp.use(cors());app.use(express.json()); // parse json bodiesapp.use(express.urlencoded({ extended: true })); // parse form data// Serve uploads folder as staticapp.use('/uploads', express.static(path.join(__dirname, 'uploads')));// Routesapp.use('/api/auth', require('./routes/auth'));app.use('/api/medicines', require('./routes/medicines'));app.use('/api/pharmacies', require('./routes/pharmacies'));// basic rootapp.get('/', (req, res) => res.send('MediConnect API running'));// create uploads folder if not existsconst fs = require('fs');const uploadsDir = path.join(__dirname, 'uploads');if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);// Start serverapp.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+
+  <!DOCTYPE html>
+  <html lang="en">
+    <head>
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <title>Pharmacy Medicine Availability App</title>
+    </head>
+
+    <body>
+      <div id="root"></div>
+      <script type="module" src="/src/main.tsx"></script>
+    </body>
+  </html>
+
+
+  <!DOCTYPE html>
+  <html lang="en">
+    <head>
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <title>Pharmacy Medicine Availability App</title>
+    </head>
+
+    <body>
+      <div id="root"></div>
+      <script type="module" src="/src/main.tsx"></script>
+    </body>
+  </html>
+  
+
+
+
+import { useState } from "react";
+import { Toaster } from "./components/ui/sonner";
+
+// Home Page
+import HomePage from "./components/HomePage";
+
+// Auth Components
+import SignUp from "./components/auth/SignUp";
+import Login from "./components/auth/Login";
+import AdminLogin from "./components/auth/AdminLogin";
+import UserLogin from "./components/auth/UserLogin";
+import ChangePassword from "./components/auth/ChangePassword";
+
+// Admin Components
+import AdminDashboard from "./components/admin/AdminDashboard";
+import MedicineManagement from "./components/admin/MedicineManagement";
+import PharmacyManagement from "./components/admin/PharmacyManagement";
+import UserManagement from "./components/admin/UserManagement";
+
+// User Components
+import UserDashboard from "./components/user/UserDashboard";
+import MedicineAvailability from "./components/user/MedicineAvailability";
+import MedicineDetails from "./components/user/MedicineDetails";
+import Profile from "./components/user/Profile";
+
+// Shared Components
+import Navbar from "./components/shared/Navbar";
+import Sidebar from "./components/shared/Sidebar";
+
+type Page = 
+  | "home"
+  | "signup" 
+  | "login"
+  | "admin-login"
+  | "user-login"
+  | "change-password"
+  | "admin-dashboard"
+  | "admin-medicines"
+  | "admin-pharmacies"
+  | "admin-users"
+  | "user-dashboard"
+  | "medicine-availability"
+  | "medicine-details"
+  | "user-profile";
+
+interface User {
+  name: string;
+  email: string;
+  role: "admin" | "user";
+}
+
+export default function App() {
+  const [currentPage, setCurrentPage] = useState<Page>("home");
+  const [user, setUser] = useState<User | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [selectedMedicineId, setSelectedMedicineId] = useState<number | undefined>();
+
+  const handleSignUp = (name: string, email: string, password: string, role: string) => {
+    const newUser: User = {
+      name,
+      email,
+      role: role as "admin" | "user"
+    };
+    setUser(newUser);
+    
+    if (role === "admin") {
+      setCurrentPage("admin-dashboard");
+    } else {
+      setCurrentPage("user-dashboard");
+    }
+  };
+
+  const handleAdminLogin = (email: string, password: string) => {
+    // Mock admin login - in production, validate against backend
+    const loggedInUser: User = {
+      name: "Admin User",
+      email,
+      role: "admin"
+    };
+    
+    setUser(loggedInUser);
+    setCurrentPage("admin-dashboard");
+  };
+
+  const handleUserLogin = (email: string, password: string) => {
+    // Mock user login - in production, validate against backend
+    const loggedInUser: User = {
+      name: "John Doe",
+      email,
+      role: "user"
+    };
+    
+    setUser(loggedInUser);
+    setCurrentPage("user-dashboard");
+  };
+
+  const handleLogin = (email: string, password: string) => {
+    // Generic login handler (kept for backward compatibility)
+    // For demo: admin@example.com -> admin, others -> user
+    const isAdmin = email.toLowerCase().includes("admin");
+    
+    const loggedInUser: User = {
+      name: isAdmin ? "Admin User" : "John Doe",
+      email,
+      role: isAdmin ? "admin" : "user"
+    };
+    
+    setUser(loggedInUser);
+    
+    if (isAdmin) {
+      setCurrentPage("admin-dashboard");
+    } else {
+      setCurrentPage("user-dashboard");
+    }
+  };
+
+  const handleLogout = () => {
+    setUser(null);
+    setCurrentPage("home");
+    setSidebarOpen(false);
+  };
+
+  const handleNavigate = (page: string, medicineId?: number) => {
+    setCurrentPage(page as Page);
+    if (medicineId) {
+      setSelectedMedicineId(medicineId);
+    }
+    setSidebarOpen(false);
+  };
+
+  const toggleSidebar = () => {
+    setSidebarOpen(!sidebarOpen);
+  };
+
+  // Render authentication pages
+  if (!user) {
+    return (
+      <>
+        {currentPage === "home" && (
+          <HomePage onNavigate={handleNavigate} />
+        )}
+        {currentPage === "signup" && (
+          <SignUp onNavigate={handleNavigate} onSignUp={handleSignUp} />
+        )}
+        {currentPage === "login" && (
+          <Login onNavigate={handleNavigate} onLogin={handleLogin} />
+        )}
+        {currentPage === "admin-login" && (
+          <AdminLogin onNavigate={handleNavigate} onLogin={handleAdminLogin} />
+        )}
+        {currentPage === "user-login" && (
+          <UserLogin onNavigate={handleNavigate} onLogin={handleUserLogin} />
+        )}
+        {currentPage === "change-password" && (
+          <ChangePassword onNavigate={handleNavigate} />
+        )}
+        <Toaster />
+      </>
+    );
+  }
+
+  // Render admin dashboard
+  if (user.role === "admin") {
+    return (
+      <div className="min-h-screen" style={{ backgroundColor: '#F8FAFC' }}>
+        <Navbar
+          userRole={user.role}
+          userName={user.name}
+          onNavigate={handleNavigate}
+          onLogout={handleLogout}
+          toggleSidebar={toggleSidebar}
+        />
+        <Sidebar
+          currentPage={currentPage}
+          onNavigate={handleNavigate}
+          isOpen={sidebarOpen}
+          onClose={() => setSidebarOpen(false)}
+        />
+        <div className="md:ml-64">
+          {currentPage === "admin-dashboard" && (
+            <AdminDashboard onNavigate={handleNavigate} />
+          )}
+          {currentPage === "admin-medicines" && <MedicineManagement />}
+          {currentPage === "admin-pharmacies" && <PharmacyManagement />}
+          {currentPage === "admin-users" && <UserManagement />}
+        </div>
+        <Toaster />
+      </div>
+    );
+  }
+
+  // Render user dashboard
+  return (
+    <div className="min-h-screen" style={{ backgroundColor: '#F8FAFC' }}>
+      <Navbar
+        userRole={user.role}
+        userName={user.name}
+        onNavigate={handleNavigate}
+        onLogout={handleLogout}
+      />
+      <div>
+        {currentPage === "user-dashboard" && (
+          <UserDashboard onNavigate={handleNavigate} />
+        )}
+        {currentPage === "medicine-availability" && (
+          <MedicineAvailability onNavigate={handleNavigate} />
+        )}
+        {currentPage === "medicine-details" && (
+          <MedicineDetails 
+            medicineId={selectedMedicineId} 
+            onNavigate={handleNavigate} 
+          />
+        )}
+        {currentPage === "user-profile" && (
+          <Profile
+            userName={user.name}
+            userEmail={user.email}
+            onNavigate={handleNavigate}
+          />
+        )}
+      </div>
+      <Toaster />
+    </div>
+  );
+}
+
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
+import { Button } from "./ui/button";
+import { Shield, User, Heart, MapPin, Pill, Users } from "lucide-react";
+
+interface HomePageProps {
+  onNavigate: (page: string) => void;
+}
+
+export default function HomePage({ onNavigate }: HomePageProps) {
+  return (
+    <div className="min-h-screen" style={{ backgroundColor: '#F8FAFC' }}>
+      {/* Header */}
+      <div className="py-6 px-4" style={{ backgroundColor: '#1A73E8' }}>
+        <div className="max-w-7xl mx-auto">
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 rounded-full flex items-center justify-center bg-white">
+              <Heart className="w-6 h-6" style={{ color: '#1A73E8' }} />
+            </div>
+            <h1 className="text-white">MEDICONNECT</h1>
+          </div>
+          <p className="text-white mt-2 opacity-90">Your Trusted Pharmacy Medicine Availability Platform</p>
+        </div>
+      </div>
+
+      {/* Hero Section */}
+      <div className="max-w-7xl mx-auto px-4 py-12">
+        <div className="text-center mb-12">
+          <h2 className="mb-4">Welcome to MEDICONNECT</h2>
+          <p className="text-gray-600 max-w-2xl mx-auto">
+            Find medicine availability across nearby pharmacies instantly. Admins can manage inventory, 
+            pharmacies, and users efficiently.
+          </p>
+        </div>
+
+        {/* Login Options */}
+        <div className="grid md:grid-cols-2 gap-8 max-w-4xl mx-auto mb-12">
+          {/* User Login Card */}
+          <Card className="hover:shadow-lg transition-shadow">
+            <CardHeader>
+              <div className="flex items-center justify-center mb-4">
+                <div className="w-16 h-16 rounded-full flex items-center justify-center" style={{ backgroundColor: '#1A73E8' }}>
+                  <User className="w-8 h-8 text-white" />
+                </div>
+              </div>
+              <CardTitle className="text-center">User Portal</CardTitle>
+              <CardDescription className="text-center">
+                Search for medicine availability in nearby pharmacies
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2 text-sm text-gray-600">
+                <div className="flex items-center gap-2">
+                  <MapPin className="w-4 h-4" style={{ color: '#1A73E8' }} />
+                  <span>Find nearby pharmacies</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Pill className="w-4 h-4" style={{ color: '#1A73E8' }} />
+                  <span>Check medicine availability</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Heart className="w-4 h-4" style={{ color: '#1A73E8' }} />
+                  <span>Save your favorite medicines</span>
+                </div>
+              </div>
+              <Button 
+                className="w-full" 
+                style={{ backgroundColor: '#1A73E8' }}
+                onClick={() => onNavigate("user-login")}
+              >
+                User Login
+              </Button>
+              <p className="text-center text-sm text-gray-600">
+                New user?{" "}
+                <button
+                  onClick={() => onNavigate("signup")}
+                  className="hover:underline"
+                  style={{ color: '#1A73E8' }}
+                >
+                  Sign up here
+                </button>
+              </p>
+            </CardContent>
+          </Card>
+
+          {/* Admin Login Card */}
+          <Card className="hover:shadow-lg transition-shadow">
+            <CardHeader>
+              <div className="flex items-center justify-center mb-4">
+                <div className="w-16 h-16 rounded-full flex items-center justify-center" style={{ backgroundColor: '#00C853' }}>
+                  <Shield className="w-8 h-8 text-white" />
+                </div>
+              </div>
+              <CardTitle className="text-center">Admin Portal</CardTitle>
+              <CardDescription className="text-center">
+                Manage medicines, pharmacies, and user accounts
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2 text-sm text-gray-600">
+                <div className="flex items-center gap-2">
+                  <Pill className="w-4 h-4" style={{ color: '#00C853' }} />
+                  <span>Manage medicine inventory</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <MapPin className="w-4 h-4" style={{ color: '#00C853' }} />
+                  <span>Control pharmacy listings</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Users className="w-4 h-4" style={{ color: '#00C853' }} />
+                  <span>User management access</span>
+                </div>
+              </div>
+              <Button 
+                className="w-full" 
+                style={{ backgroundColor: '#00C853' }}
+                onClick={() => onNavigate("admin-login")}
+              >
+                Admin Login
+              </Button>
+              <p className="text-center text-sm text-gray-600">
+                Authorized personnel only
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Features Section */}
+        <div className="mt-16">
+          <h3 className="text-center mb-8">Platform Features</h3>
+          <div className="grid md:grid-cols-3 gap-6">
+            <div className="text-center p-6">
+              <div className="w-12 h-12 rounded-full mx-auto mb-4 flex items-center justify-center" style={{ backgroundColor: '#1A73E8' }}>
+                <MapPin className="w-6 h-6 text-white" />
+              </div>
+              <h4 className="mb-2">Location-Based Search</h4>
+              <p className="text-sm text-gray-600">
+                Find pharmacies near you with real-time medicine availability
+              </p>
+            </div>
+            <div className="text-center p-6">
+              <div className="w-12 h-12 rounded-full mx-auto mb-4 flex items-center justify-center" style={{ backgroundColor: '#00C853' }}>
+                <Pill className="w-6 h-6 text-white" />
+              </div>
+              <h4 className="mb-2">Medicine Database</h4>
+              <p className="text-sm text-gray-600">
+                Comprehensive database of medicines with detailed information
+              </p>
+            </div>
+            <div className="text-center p-6">
+              <div className="w-12 h-12 rounded-full mx-auto mb-4 flex items-center justify-center" style={{ backgroundColor: '#1A73E8' }}>
+                <Heart className="w-6 h-6 text-white" />
+              </div>
+              <h4 className="mb-2">Easy Management</h4>
+              <p className="text-sm text-gray-600">
+                Intuitive interface for both users and administrators
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div className="mt-16 py-6 border-t border-gray-200">
+        <div className="max-w-7xl mx-auto px-4">
+          <p className="text-center text-sm text-gray-600">
+            © 2025 MEDICONNECT. All rights reserved.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
+import { Button } from "./ui/button";
+import { 
+  LayoutDashboard, 
+  Pill, 
+  Building2, 
+  Users, 
+  Search, 
+  Eye, 
+  UserCircle,
+  LogIn,
+  UserPlus,
+  Lock,
+  Server,
+  Laptop
+} from "lucide-react";
+
+interface NavigationDashboardProps {
+  onNavigate: (page: string) => void;
+  currentUser: { name: string; email: string; role: string } | null;
+}
+
+export default function NavigationDashboard({ onNavigate, currentUser }: NavigationDashboardProps) {
+  const adminPages = [
+    { id: "admin-dashboard", label: "Admin Dashboard", icon: LayoutDashboard, description: "Overview & statistics" },
+    { id: "admin-medicines", label: "Medicine Management", icon: Pill, description: "Add, edit, delete medicines" },
+    { id: "admin-pharmacies", label: "Pharmacy Management", icon: Building2, description: "Manage pharmacy locations" },
+    { id: "admin-users", label: "User Management", icon: Users, description: "Manage platform users" },
+  ];
+
+  const userPages = [
+    { id: "user-dashboard", label: "User Dashboard", icon: LayoutDashboard, description: "Find medicines easily" },
+    { id: "medicine-availability", label: "Medicine Search", icon: Search, description: "Search & filter medicines" },
+    { id: "medicine-details", label: "Medicine Details", icon: Eye, description: "View detailed information" },
+    { id: "user-profile", label: "User Profile", icon: UserCircle, description: "Manage your account" },
+  ];
+
+  const authPages = [
+    { id: "login", label: "Login", icon: LogIn, description: "Access your account" },
+    { id: "signup", label: "Sign Up", icon: UserPlus, description: "Create new account" },
+    { id: "change-password", label: "Change Password", icon: Lock, description: "Update password" },
+  ];
+
+  return (
+    <div className="min-h-screen p-6" style={{ backgroundColor: '#F8FAFC' }}>
+      <div className="max-w-7xl mx-auto space-y-8">
+        {/* Header */}
+        <div className="text-center space-y-2">
+          <h1 className="text-4xl">MEDICONNECT Navigation</h1>
+          <p className="text-gray-600">
+            {currentUser 
+              ? `Welcome, ${currentUser.name} (${currentUser.role === 'admin' ? 'Admin' : 'User'})`
+              : 'Select a page to navigate'
+            }
+          </p>
+        </div>
+
+        {/* Admin Section */}
+        <div>
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-10 h-10 rounded-lg flex items-center justify-center" style={{ backgroundColor: '#1A73E8' }}>
+              <Server className="w-6 h-6 text-white" />
+            </div>
+            <div>
+              <h2>Server / Admin Pages</h2>
+              <p className="text-sm text-gray-600">Administrative controls and management</p>
+            </div>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {adminPages.map((page) => {
+              const Icon = page.icon;
+              return (
+                <Card 
+                  key={page.id} 
+                  className="hover:shadow-lg transition-all cursor-pointer group"
+                  onClick={() => onNavigate(page.id)}
+                >
+                  <CardHeader>
+                    <div className="flex items-center gap-3">
+                      <div 
+                        className="w-12 h-12 rounded-lg flex items-center justify-center group-hover:scale-110 transition-transform"
+                        style={{ backgroundColor: '#1A73E820' }}
+                      >
+                        <Icon className="w-6 h-6" style={{ color: '#1A73E8' }} />
+                      </div>
+                      <div className="flex-1">
+                        <CardTitle className="text-base">{page.label}</CardTitle>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <CardDescription>{page.description}</CardDescription>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Client Section */}
+        <div>
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-10 h-10 rounded-lg flex items-center justify-center" style={{ backgroundColor: '#00C853' }}>
+              <Laptop className="w-6 h-6 text-white" />
+            </div>
+            <div>
+              <h2>Client / User Pages</h2>
+              <p className="text-sm text-gray-600">User-facing features and services</p>
+            </div>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {userPages.map((page) => {
+              const Icon = page.icon;
+              return (
+                <Card 
+                  key={page.id} 
+                  className="hover:shadow-lg transition-all cursor-pointer group"
+                  onClick={() => onNavigate(page.id)}
+                >
+                  <CardHeader>
+                    <div className="flex items-center gap-3">
+                      <div 
+                        className="w-12 h-12 rounded-lg flex items-center justify-center group-hover:scale-110 transition-transform"
+                        style={{ backgroundColor: '#00C85320' }}
+                      >
+                        <Icon className="w-6 h-6" style={{ color: '#00C853' }} />
+                      </div>
+                      <div className="flex-1">
+                        <CardTitle className="text-base">{page.label}</CardTitle>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <CardDescription>{page.description}</CardDescription>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Auth Section */}
+        <div>
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-10 h-10 rounded-lg flex items-center justify-center" style={{ backgroundColor: '#9C27B0' }}>
+              <Lock className="w-6 h-6 text-white" />
+            </div>
+            <div>
+              <h2>Authentication Pages</h2>
+              <p className="text-sm text-gray-600">Login, signup, and security</p>
+            </div>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {authPages.map((page) => {
+              const Icon = page.icon;
+              return (
+                <Card 
+                  key={page.id} 
+                  className="hover:shadow-lg transition-all cursor-pointer group"
+                  onClick={() => onNavigate(page.id)}
+                >
+                  <CardHeader>
+                    <div className="flex items-center gap-3">
+                      <div 
+                        className="w-12 h-12 rounded-lg flex items-center justify-center group-hover:scale-110 transition-transform"
+                        style={{ backgroundColor: '#9C27B020' }}
+                      >
+                        <Icon className="w-6 h-6" style={{ color: '#9C27B0' }} />
+                      </div>
+                      <div className="flex-1">
+                        <CardTitle className="text-base">{page.label}</CardTitle>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <CardDescription>{page.description}</CardDescription>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Quick Action */}
+        <Card className="border-2" style={{ borderColor: '#1A73E8' }}>
+          <CardContent className="p-6">
+            <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+              <div>
+                <h3>Testing the Platform</h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  Use emails with "admin" to login as admin, others will be users
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <Button 
+                  style={{ backgroundColor: '#1A73E8' }}
+                  onClick={() => onNavigate('login')}
+                >
+                  Get Started
+                </Button>
+                <Button 
+                  variant="outline"
+                  style={{ borderColor: '#00C853', color: '#00C853' }}
+                  onClick={() => onNavigate('signup')}
+                >
+                  Sign Up
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+import { useState } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { Button } from "../ui/button";
+import { Input } from "../ui/input";
+import { Label } from "../ui/label";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../ui/table";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "../ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { Badge } from "../ui/badge";
+import { Plus, Edit, Trash2, Search } from "lucide-react";
+import { toast } from "sonner@2.0.3";
+
+interface Medicine {
+  id: number;
+  name: string;
+  type: string;
+  quantity: number;
+  availability: string;
+  pharmacy: string;
+}
+
+export default function MedicineManagement() {
+  const [medicines, setMedicines] = useState<Medicine[]>([
+    { id: 1, name: "Paracetamol 500mg", type: "Tablet", quantity: 150, availability: "In Stock", pharmacy: "HealthPlus Pharmacy" },
+    { id: 2, name: "Amoxicillin 250mg", type: "Capsule", quantity: 75, availability: "In Stock", pharmacy: "MediCare Center" },
+    { id: 3, name: "Ibuprofen 400mg", type: "Tablet", quantity: 0, availability: "Out of Stock", pharmacy: "City Pharmacy" },
+    { id: 4, name: "Cetirizine 10mg", type: "Tablet", quantity: 200, availability: "In Stock", pharmacy: "Green Cross" },
+    { id: 5, name: "Omeprazole 20mg", type: "Capsule", quantity: 30, availability: "Low Stock", pharmacy: "HealthPlus Pharmacy" },
+  ]);
+
+  const [searchTerm, setSearchTerm] = useState("");
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [editingMedicine, setEditingMedicine] = useState<Medicine | null>(null);
+  const [formData, setFormData] = useState({
+    name: "",
+    type: "",
+    quantity: 0,
+    pharmacy: ""
+  });
+
+  const handleAdd = () => {
+    setEditingMedicine(null);
+    setFormData({ name: "", type: "", quantity: 0, pharmacy: "" });
+    setIsDialogOpen(true);
+  };
+
+  const handleEdit = (medicine: Medicine) => {
+    setEditingMedicine(medicine);
+    setFormData({
+      name: medicine.name,
+      type: medicine.type,
+      quantity: medicine.quantity,
+      pharmacy: medicine.pharmacy
+    });
+    setIsDialogOpen(true);
+  };
+
+  const handleDelete = (id: number) => {
+    setMedicines(medicines.filter(m => m.id !== id));
+    toast.success("Medicine deleted successfully!");
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    const availability = formData.quantity === 0 ? "Out of Stock" : formData.quantity < 50 ? "Low Stock" : "In Stock";
+
+    if (editingMedicine) {
+      setMedicines(medicines.map(m =>
+        m.id === editingMedicine.id
+          ? { ...m, ...formData, availability }
+          : m
+      ));
+      toast.success("Medicine updated successfully!");
+    } else {
+      const newMedicine: Medicine = {
+        id: Date.now(),
+        ...formData,
+        availability
+      };
+      setMedicines([...medicines, newMedicine]);
+      toast.success("Medicine added successfully!");
+    }
+
+    setIsDialogOpen(false);
+  };
+
+  const filteredMedicines = medicines.filter(m =>
+    m.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    m.pharmacy.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  const getAvailabilityColor = (availability: string) => {
+    switch (availability) {
+      case "In Stock":
+        return "bg-green-100 text-green-800";
+      case "Low Stock":
+        return "bg-yellow-100 text-yellow-800";
+      case "Out of Stock":
+        return "bg-red-100 text-red-800";
+      default:
+        return "bg-gray-100 text-gray-800";
+    }
+  };
+
+  return (
+    <div className="p-6 space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1>Medicine Management</h1>
+          <p className="text-gray-600 mt-1">Manage all medicines in the platform</p>
+        </div>
+        <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+          <DialogTrigger asChild>
+            <Button onClick={handleAdd} style={{ backgroundColor: '#1A73E8' }}>
+              <Plus className="w-4 h-4 mr-2" />
+              Add New Medicine
+            </Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>{editingMedicine ? "Edit Medicine" : "Add New Medicine"}</DialogTitle>
+              <DialogDescription>
+                {editingMedicine ? "Update medicine details" : "Add a new medicine to the system"}
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="name">Medicine Name</Label>
+                <Input
+                  id="name"
+                  value={formData.name}
+                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="type">Type</Label>
+                <Select value={formData.type} onValueChange={(value) => setFormData({ ...formData, type: value })}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Tablet">Tablet</SelectItem>
+                    <SelectItem value="Capsule">Capsule</SelectItem>
+                    <SelectItem value="Syrup">Syrup</SelectItem>
+                    <SelectItem value="Injection">Injection</SelectItem>
+                    <SelectItem value="Cream">Cream</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="quantity">Quantity</Label>
+                <Input
+                  id="quantity"
+                  type="number"
+                  value={formData.quantity}
+                  onChange={(e) => setFormData({ ...formData, quantity: parseInt(e.target.value) || 0 })}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="pharmacy">Pharmacy Name</Label>
+                <Input
+                  id="pharmacy"
+                  value={formData.pharmacy}
+                  onChange={(e) => setFormData({ ...formData, pharmacy: e.target.value })}
+                  required
+                />
+              </div>
+              <Button type="submit" className="w-full" style={{ backgroundColor: '#1A73E8' }}>
+                {editingMedicine ? "Update Medicine" : "Add Medicine"}
+              </Button>
+            </form>
+          </DialogContent>
+        </Dialog>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-4">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
+              <Input
+                placeholder="Search medicines..."
+                className="pl-10"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Medicine Name</TableHead>
+                  <TableHead>Type</TableHead>
+                  <TableHead>Quantity</TableHead>
+                  <TableHead>Availability</TableHead>
+                  <TableHead>Pharmacy</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredMedicines.map((medicine) => (
+                  <TableRow key={medicine.id}>
+                    <TableCell>{medicine.name}</TableCell>
+                    <TableCell>{medicine.type}</TableCell>
+                    <TableCell>{medicine.quantity}</TableCell>
+                    <TableCell>
+                      <Badge className={getAvailabilityColor(medicine.availability)}>
+                        {medicine.availability}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>{medicine.pharmacy}</TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleEdit(medicine)}
+                        >
+                          <Edit className="w-4 h-4" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleDelete(medicine.id)}
+                        >
+                          <Trash2 className="w-4 h-4 text-red-500" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+import { useState } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { Button } from "../ui/button";
+import { Input } from "../ui/input";
+import { Label } from "../ui/label";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../ui/table";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "../ui/dialog";
+import { Badge } from "../ui/badge";
+import { Plus, Edit, Trash2, Search, MapPin, Phone } from "lucide-react";
+import { toast } from "sonner@2.0.3";
+
+interface Pharmacy {
+  id: number;
+  name: string;
+  location: string;
+  contact: string;
+  status: string;
+}
+
+export default function PharmacyManagement() {
+  const [pharmacies, setPharmacies] = useState<Pharmacy[]>([
+    { id: 1, name: "HealthPlus Pharmacy", location: "123 Main St, Downtown", contact: "+1 234-567-8901", status: "Active" },
+    { id: 2, name: "MediCare Center", location: "456 Oak Ave, Midtown", contact: "+1 234-567-8902", status: "Active" },
+    { id: 3, name: "City Pharmacy", location: "789 Elm St, Uptown", contact: "+1 234-567-8903", status: "Active" },
+    { id: 4, name: "Green Cross", location: "321 Pine Rd, Suburbs", contact: "+1 234-567-8904", status: "Inactive" },
+    { id: 5, name: "Wellness Pharmacy", location: "654 Maple Dr, Eastside", contact: "+1 234-567-8905", status: "Active" },
+  ]);
+
+  const [searchTerm, setSearchTerm] = useState("");
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [editingPharmacy, setEditingPharmacy] = useState<Pharmacy | null>(null);
+  const [formData, setFormData] = useState({
+    name: "",
+    location: "",
+    contact: "",
+    status: "Active"
+  });
+
+  const handleAdd = () => {
+    setEditingPharmacy(null);
+    setFormData({ name: "", location: "", contact: "", status: "Active" });
+    setIsDialogOpen(true);
+  };
+
+  const handleEdit = (pharmacy: Pharmacy) => {
+    setEditingPharmacy(pharmacy);
+    setFormData({
+      name: pharmacy.name,
+      location: pharmacy.location,
+      contact: pharmacy.contact,
+      status: pharmacy.status
+    });
+    setIsDialogOpen(true);
+  };
+
+  const handleDelete = (id: number) => {
+    setPharmacies(pharmacies.filter(p => p.id !== id));
+    toast.success("Pharmacy deleted successfully!");
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (editingPharmacy) {
+      setPharmacies(pharmacies.map(p =>
+        p.id === editingPharmacy.id
+          ? { ...p, ...formData }
+          : p
+      ));
+      toast.success("Pharmacy updated successfully!");
+    } else {
+      const newPharmacy: Pharmacy = {
+        id: Date.now(),
+        ...formData
+      };
+      setPharmacies([...pharmacies, newPharmacy]);
+      toast.success("Pharmacy added successfully!");
+    }
+
+    setIsDialogOpen(false);
+  };
+
+  const filteredPharmacies = pharmacies.filter(p =>
+    p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    p.location.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  return (
+    <div className="p-6 space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1>Pharmacy Management</h1>
+          <p className="text-gray-600 mt-1">Manage all pharmacies in the platform</p>
+        </div>
+        <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+          <DialogTrigger asChild>
+            <Button onClick={handleAdd} style={{ backgroundColor: '#00C853' }}>
+              <Plus className="w-4 h-4 mr-2" />
+              Add New Pharmacy
+            </Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>{editingPharmacy ? "Edit Pharmacy" : "Add New Pharmacy"}</DialogTitle>
+              <DialogDescription>
+                {editingPharmacy ? "Update pharmacy details" : "Add a new pharmacy to the system"}
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="name">Pharmacy Name</Label>
+                <Input
+                  id="name"
+                  value={formData.name}
+                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="location">Location</Label>
+                <div className="relative">
+                  <MapPin className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
+                  <Input
+                    id="location"
+                    className="pl-10"
+                    value={formData.location}
+                    onChange={(e) => setFormData({ ...formData, location: e.target.value })}
+                    required
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="contact">Contact Number</Label>
+                <div className="relative">
+                  <Phone className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
+                  <Input
+                    id="contact"
+                    className="pl-10"
+                    value={formData.contact}
+                    onChange={(e) => setFormData({ ...formData, contact: e.target.value })}
+                    required
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label>Status</Label>
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="status"
+                      value="Active"
+                      checked={formData.status === "Active"}
+                      onChange={(e) => setFormData({ ...formData, status: e.target.value })}
+                    />
+                    <span>Active</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="status"
+                      value="Inactive"
+                      checked={formData.status === "Inactive"}
+                      onChange={(e) => setFormData({ ...formData, status: e.target.value })}
+                    />
+                    <span>Inactive</span>
+                  </label>
+                </div>
+              </div>
+              <Button type="submit" className="w-full" style={{ backgroundColor: '#00C853' }}>
+                {editingPharmacy ? "Update Pharmacy" : "Add Pharmacy"}
+              </Button>
+            </form>
+          </DialogContent>
+        </Dialog>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-4">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
+              <Input
+                placeholder="Search pharmacies..."
+                className="pl-10"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Pharmacy Name</TableHead>
+                  <TableHead>Location</TableHead>
+                  <TableHead>Contact</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredPharmacies.map((pharmacy) => (
+                  <TableRow key={pharmacy.id}>
+                    <TableCell>{pharmacy.name}</TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <MapPin className="w-4 h-4 text-gray-400" />
+                        {pharmacy.location}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <Phone className="w-4 h-4 text-gray-400" />
+                        {pharmacy.contact}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Badge className={pharmacy.status === "Active" ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-800"}>
+                        {pharmacy.status}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleEdit(pharmacy)}
+                        >
+                          <Edit className="w-4 h-4" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleDelete(pharmacy.id)}
+                        >
+                          <Trash2 className="w-4 h-4 text-red-500" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+import { useState } from "react";
+import { Card, CardContent, CardHeader } from "../ui/card";
+import { Button } from "../ui/button";
+import { Input } from "../ui/input";
+import { Label } from "../ui/label";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../ui/table";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "../ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { Badge } from "../ui/badge";
+import { Plus, Edit, Trash2, Search, Mail } from "lucide-react";
+import { toast } from "sonner@2.0.3";
+
+interface User {
+  id: number;
+  name: string;
+  email: string;
+  role: string;
+  status: string;
+  joinDate: string;
+}
+
+export default function UserManagement() {
+  const [users, setUsers] = useState<User[]>([
+    { id: 1, name: "John Doe", email: "john.doe@example.com", role: "User", status: "Active", joinDate: "2024-01-15" },
+    { id: 2, name: "Jane Smith", email: "jane.smith@example.com", role: "Admin", status: "Active", joinDate: "2024-02-20" },
+    { id: 3, name: "Bob Johnson", email: "bob.johnson@example.com", role: "User", status: "Active", joinDate: "2024-03-10" },
+    { id: 4, name: "Alice Williams", email: "alice.williams@example.com", role: "User", status: "Inactive", joinDate: "2024-04-05" },
+    { id: 5, name: "Charlie Brown", email: "charlie.brown@example.com", role: "User", status: "Active", joinDate: "2024-05-12" },
+  ]);
+
+  const [searchTerm, setSearchTerm] = useState("");
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [formData, setFormData] = useState({
+    name: "",
+    email: "",
+    role: "User",
+    status: "Active"
+  });
+
+  const handleAdd = () => {
+    setEditingUser(null);
+    setFormData({ name: "", email: "", role: "User", status: "Active" });
+    setIsDialogOpen(true);
+  };
+
+  const handleEdit = (user: User) => {
+    setEditingUser(user);
+    setFormData({
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      status: user.status
+    });
+    setIsDialogOpen(true);
+  };
+
+  const handleDelete = (id: number) => {
+    setUsers(users.filter(u => u.id !== id));
+    toast.success("User deleted successfully!");
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (editingUser) {
+      setUsers(users.map(u =>
+        u.id === editingUser.id
+          ? { ...u, ...formData }
+          : u
+      ));
+      toast.success("User updated successfully!");
+    } else {
+      const newUser: User = {
+        id: Date.now(),
+        ...formData,
+        joinDate: new Date().toISOString().split('T')[0]
+      };
+      setUsers([...users, newUser]);
+      toast.success("User added successfully!");
+    }
+
+    setIsDialogOpen(false);
+  };
+
+  const filteredUsers = users.filter(u =>
+    u.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    u.email.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  return (
+    <div className="p-6 space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1>User Management</h1>
+          <p className="text-gray-600 mt-1">Manage all users in the platform</p>
+        </div>
+        <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+          <DialogTrigger asChild>
+            <Button onClick={handleAdd} style={{ backgroundColor: '#FF6B00' }}>
+              <Plus className="w-4 h-4 mr-2" />
+              Add New User
+            </Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>{editingUser ? "Edit User" : "Add New User"}</DialogTitle>
+              <DialogDescription>
+                {editingUser ? "Update user details" : "Add a new user to the system"}
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="name">Full Name</Label>
+                <Input
+                  id="name"
+                  value={formData.name}
+                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="email">Email</Label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
+                  <Input
+                    id="email"
+                    type="email"
+                    className="pl-10"
+                    value={formData.email}
+                    onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                    required
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="role">Role</Label>
+                <Select value={formData.role} onValueChange={(value) => setFormData({ ...formData, role: value })}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select role" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="User">User</SelectItem>
+                    <SelectItem value="Admin">Admin</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Status</Label>
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="status"
+                      value="Active"
+                      checked={formData.status === "Active"}
+                      onChange={(e) => setFormData({ ...formData, status: e.target.value })}
+                    />
+                    <span>Active</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="status"
+                      value="Inactive"
+                      checked={formData.status === "Inactive"}
+                      onChange={(e) => setFormData({ ...formData, status: e.target.value })}
+                    />
+                    <span>Inactive</span>
+                  </label>
+                </div>
+              </div>
+              <Button type="submit" className="w-full" style={{ backgroundColor: '#FF6B00' }}>
+                {editingUser ? "Update User" : "Add User"}
+              </Button>
+            </form>
+          </DialogContent>
+        </Dialog>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-4">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
+              <Input
+                placeholder="Search users..."
+                className="pl-10"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Email</TableHead>
+                  <TableHead>Role</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Join Date</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredUsers.map((user) => (
+                  <TableRow key={user.id}>
+                    <TableCell>{user.name}</TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <Mail className="w-4 h-4 text-gray-400" />
+                        {user.email}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Badge className={user.role === "Admin" ? "bg-purple-100 text-purple-800" : "bg-blue-100 text-blue-800"}>
+                        {user.role}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge className={user.status === "Active" ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-800"}>
+                        {user.status}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>{user.joinDate}</TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleEdit(user)}
+                        >
+                          <Edit className="w-4 h-4" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleDelete(user.id)}
+                        >
+                          <Trash2 className="w-4 h-4 text-red-500" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+import { useState } from "react";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
+import { Input } from "../ui/input";
+import { Label } from "../ui/label";
+import { Button } from "../ui/button";
+import { Shield, Mail, Lock, ArrowLeft } from "lucide-react";
+
+interface AdminLoginProps {
+  onNavigate: (page: string) => void;
+  onLogin: (email: string, password: string) => void;
+}
+
+export default function AdminLogin({ onNavigate, onLogin }: AdminLoginProps) {
+  const [formData, setFormData] = useState({
+    email: "",
+    password: ""
+  });
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  const validateEmail = (email: string) => {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(email);
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const newErrors: Record<string, string> = {};
+
+    if (!formData.email) {
+      newErrors.email = "Email is required";
+    } else if (!validateEmail(formData.email)) {
+      newErrors.email = "Please enter a valid email address";
+    }
+    if (!formData.password) {
+      newErrors.password = "Password is required";
+    }
+
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors);
+      return;
+    }
+
+    onLogin(formData.email, formData.password);
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center p-4" style={{ backgroundColor: '#F8FAFC' }}>
+      <div className="w-full max-w-md">
+        <button
+          onClick={() => onNavigate("home")}
+          className="flex items-center gap-2 mb-4 text-gray-600 hover:text-gray-900"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          Back to Home
+        </button>
+        
+        <Card className="w-full">
+          <CardHeader className="space-y-1">
+            <div className="flex items-center justify-center mb-4">
+              <div className="w-16 h-16 rounded-full flex items-center justify-center" style={{ backgroundColor: '#00C853' }}>
+                <Shield className="w-8 h-8 text-white" />
+              </div>
+            </div>
+            <CardTitle className="text-center">Admin Portal</CardTitle>
+            <CardDescription className="text-center">
+              Login to manage MEDICONNECT platform
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="email">Admin Email</Label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
+                  <Input
+                    id="email"
+                    type="email"
+                    placeholder="admin@mediconnect.com"
+                    className="pl-10"
+                    value={formData.email}
+                    onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                  />
+                </div>
+                {errors.email && <p className="text-red-500 text-sm">{errors.email}</p>}
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="password">Password</Label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
+                  <Input
+                    id="password"
+                    type="password"
+                    placeholder="Enter your password"
+                    className="pl-10"
+                    value={formData.password}
+                    onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                  />
+                </div>
+                {errors.password && <p className="text-red-500 text-sm">{errors.password}</p>}
+              </div>
+
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => onNavigate("change-password")}
+                  className="text-sm hover:underline"
+                  style={{ color: '#00C853' }}
+                >
+                  Forgot Password?
+                </button>
+              </div>
+
+              <Button type="submit" className="w-full" style={{ backgroundColor: '#00C853' }}>
+                Admin Login
+              </Button>
+            </form>
+
+            <div className="mt-6 p-4 bg-gray-50 rounded-lg">
+              <p className="text-xs text-gray-600">
+                <strong>Demo Credentials:</strong><br />
+                Email: admin@mediconnect.com<br />
+                Password: Any password
+              </p>
+            </div>
+
+            <div className="mt-4 text-center">
+              <p className="text-sm text-gray-600">
+                Not an admin?{" "}
+                <button
+                  onClick={() => onNavigate("user-login")}
+                  className="hover:underline"
+                  style={{ color: '#00C853' }}
+                >
+                  User Login
+                </button>
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+import { useState } from "react";
+import axios from "axios";
+import API_BASE_URL from "../../config";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
+import { Input } from "../ui/input";
+import { Label } from "../ui/label";
+import { Button } from "../ui/button";
+import { LogIn, Mail, Lock } from "lucide-react";
+
+interface LoginProps {
+  onNavigate: (page: string) => void;
+  onLogin: (email: string, password: string) => void;
+}
+
+export default function Login({ onNavigate }: LoginProps) {
+  const [formData, setFormData] = useState({ email: "", password: "" });
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  const validateEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const newErrors: Record<string, string> = {};
+
+    if (!formData.email) newErrors.email = "Email is required";
+    else if (!validateEmail(formData.email)) newErrors.email = "Invalid email";
+    if (!formData.password) newErrors.password = "Password is required";
+
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors);
+      return;
+    }
+
+    try {
+      const res = await axios.post(`${API_BASE_URL}/auth/login`, formData);
+      console.log("Login success:", res.data);
+      alert("Login successful!");
+      // optional: store token
+      // localStorage.setItem("token", res.data.token);
+    } catch (err: any) {
+      alert(err.response?.data?.message || "Login failed");
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center p-4" style={{ backgroundColor: '#F8FAFC' }}>
+      <Card className="w-full max-w-md">
+        <CardHeader className="space-y-1">
+          <div className="flex items-center justify-center mb-4">
+            <div className="w-16 h-16 rounded-full flex items-center justify-center" style={{ backgroundColor: '#1A73E8' }}>
+              <LogIn className="w-8 h-8 text-white" />
+            </div>
+          </div>
+          <CardTitle className="text-center">Welcome Back</CardTitle>
+          <CardDescription className="text-center">Login to your MEDICONNECT account</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="email">Email</Label>
+              <div className="relative">
+                <Mail className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
+                <Input
+                  id="email"
+                  type="email"
+                  placeholder="Enter your email"
+                  className="pl-10"
+                  value={formData.email}
+                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                />
+              </div>
+              {errors.email && <p className="text-red-500 text-sm">{errors.email}</p>}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="password">Password</Label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
+                <Input
+                  id="password"
+                  type="password"
+                  placeholder="Enter your password"
+                  className="pl-10"
+                  value={formData.password}
+                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                />
+              </div>
+              {errors.password && <p className="text-red-500 text-sm">{errors.password}</p>}
+            </div>
+
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => onNavigate("change-password")}
+                className="text-sm hover:underline"
+                style={{ color: '#1A73E8' }}
+              >
+                Forgot Password?
+              </button>
+            </div>
+
+            <Button type="submit" className="w-full" style={{ backgroundColor: '#1A73E8' }}>
+              Login
+            </Button>
+          </form>
+
+          <div className="mt-4 text-center">
+            <p className="text-sm text-gray-600">
+              Don’t have an account?{" "}
+              <button
+                onClick={() => onNavigate("signup")}
+                className="hover:underline"
+                style={{ color: '#1A73E8' }}
+              >
+                Sign up here
+              </button>
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+import { useState } from "react";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
+import { Input } from "../ui/input";
+import { Label } from "../ui/label";
+import { Button } from "../ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { Progress } from "../ui/progress";
+import { UserPlus, Mail, Lock, User, ArrowLeft } from "lucide-react";
+
+interface SignUpProps {
+  onNavigate: (page: string) => void;
+  onSignUp: (name: string, email: string, password: string, role: string) => void;
+}
+
+export default function SignUp({ onNavigate, onSignUp }: SignUpProps) {
+  const [formData, setFormData] = useState({
+    fullName: "",
+    email: "",
+    password: "",
+    confirmPassword: "",
+    role: "user"
+  });
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [passwordStrength, setPasswordStrength] = useState(0);
+
+  const validateEmail = (email: string) => {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(email);
+  };
+
+  const calculatePasswordStrength = (password: string) => {
+    let strength = 0;
+    if (password.length >= 8) strength += 25;
+    if (/[a-z]/.test(password)) strength += 25;
+    if (/[A-Z]/.test(password)) strength += 25;
+    if (/[0-9]/.test(password) && /[!@#$%^&*]/.test(password)) strength += 25;
+    return strength;
+  };
+
+  const handlePasswordChange = (password: string) => {
+    setFormData({ ...formData, password });
+    setPasswordStrength(calculatePasswordStrength(password));
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const newErrors: Record<string, string> = {};
+
+    if (!formData.fullName) newErrors.fullName = "Full name is required";
+    if (!formData.email) {
+      newErrors.email = "Email is required";
+    } else if (!validateEmail(formData.email)) {
+      newErrors.email = "Please enter a valid email address";
+    }
+    if (!formData.password) {
+      newErrors.password = "Password is required";
+    } else if (formData.password.length < 8) {
+      newErrors.password = "Password must be at least 8 characters";
+    }
+    if (formData.password !== formData.confirmPassword) {
+      newErrors.confirmPassword = "Passwords do not match";
+    }
+
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors);
+      return;
+    }
+
+    onSignUp(formData.fullName, formData.email, formData.password, formData.role);
+  };
+
+  const getStrengthColor = () => {
+    if (passwordStrength < 50) return "bg-red-500";
+    if (passwordStrength < 75) return "bg-yellow-500";
+    return "bg-green-500";
+  };
+
+  const getStrengthText = () => {
+    if (passwordStrength < 50) return "Weak";
+    if (passwordStrength < 75) return "Medium";
+    return "Strong";
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center p-4" style={{ backgroundColor: '#F8FAFC' }}>
+      <div className="w-full max-w-md">
+        <button
+          onClick={() => onNavigate("home")}
+          className="flex items-center gap-2 mb-4 text-gray-600 hover:text-gray-900"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          Back to Home
+        </button>
+        
+        <Card className="w-full">
+        <CardHeader className="space-y-1">
+          <div className="flex items-center justify-center mb-4">
+            <div className="w-16 h-16 rounded-full flex items-center justify-center" style={{ backgroundColor: '#1A73E8' }}>
+              <UserPlus className="w-8 h-8 text-white" />
+            </div>
+          </div>
+          <CardTitle className="text-center">Create an Account</CardTitle>
+          <CardDescription className="text-center">Join MEDICONNECT to find medicines easily</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="fullName">Full Name</Label>
+              <div className="relative">
+                <User className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
+                <Input
+                  id="fullName"
+                  placeholder="Enter your full name"
+                  className="pl-10"
+                  value={formData.fullName}
+                  onChange={(e) => setFormData({ ...formData, fullName: e.target.value })}
+                />
+              </div>
+              {errors.fullName && <p className="text-red-500 text-sm">{errors.fullName}</p>}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="email">Email</Label>
+              <div className="relative">
+                <Mail className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
+                <Input
+                  id="email"
+                  type="email"
+                  placeholder="Enter your email"
+                  className="pl-10"
+                  value={formData.email}
+                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                />
+              </div>
+              {errors.email && <p className="text-red-500 text-sm">{errors.email}</p>}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="password">Password</Label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
+                <Input
+                  id="password"
+                  type="password"
+                  placeholder="Create a password"
+                  className="pl-10"
+                  value={formData.password}
+                  onChange={(e) => handlePasswordChange(e.target.value)}
+                />
+              </div>
+              {formData.password && (
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <Progress value={passwordStrength} className="h-2" />
+                    <span className="text-sm text-gray-600">{getStrengthText()}</span>
+                  </div>
+                  <div className={`h-1 rounded ${getStrengthColor()}`} style={{ width: `${passwordStrength}%` }}></div>
+                </div>
+              )}
+              {errors.password && <p className="text-red-500 text-sm">{errors.password}</p>}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="confirmPassword">Confirm Password</Label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
+                <Input
+                  id="confirmPassword"
+                  type="password"
+                  placeholder="Confirm your password"
+                  className="pl-10"
+                  value={formData.confirmPassword}
+                  onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
+                />
+              </div>
+              {errors.confirmPassword && <p className="text-red-500 text-sm">{errors.confirmPassword}</p>}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="role">Role</Label>
+              <Select value={formData.role} onValueChange={(value) => setFormData({ ...formData, role: value })}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select role" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="user">Normal User</SelectItem>
+                  <SelectItem value="admin">Admin</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <Button type="submit" className="w-full" style={{ backgroundColor: '#1A73E8' }}>
+              Sign Up
+            </Button>
+          </form>
+
+          <div className="mt-4 text-center">
+            <p className="text-sm text-gray-600">
+              Already have an account?{" "}
+              <button
+                onClick={() => onNavigate("home")}
+                className="hover:underline"
+                style={{ color: '#1A73E8' }}
+              >
+                Login here
+              </button>
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+      </div>
+    </div>
+  );
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
